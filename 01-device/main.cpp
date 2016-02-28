@@ -20,18 +20,15 @@
  * THE SOFTWARE.
  */
 
-#define ENABLE_DEBUG_ALLOCATOR 1
-
 #ifdef _WIN32
 // Disable secure CRT warnings since we prefer to use portable CRT functions
-# define _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 // Use WIN32_LEAN_AND_MEAN to reduce the amount of stuff pulled in by windows.h
-# define WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
 // Avoid interactions with std::min, std::max
-# define NOMINMAX
-
-# include <windows.h>
-#endif
+#define NOMINMAX
+#include <windows.h>
+#endif // _WIN32
 
 // We use function pointers for everything, so disable the prototypes
 #define VK_NO_PROTOTYPES
@@ -118,255 +115,6 @@ struct InstanceFunctions
 #undef X
 };
 
-/*
- * Provider of VkAllocationCallbacks, which simply logs every operation.
- *
- * If you are passing it directly into a Vulkan API call, you can construct a
- * temporary VkAllocationCallbacks and pass its pointer into the API - the
- * temporary won't be destroyed until after the API call has returned.
- *
- * i.e. you can use it like:
- *   vkFoo(..., &DebugAllocator::createCallbacks("some identifier"));
- */
-class DebugAllocator
-{
-public:
-    /*
-     * src should be a global static string, and must at least remain valid
-     * until the end of the Vulkan scope that used these callbacks.
-     * This will be printed with each allocation, to help you tell where
-     * they came from.
-     */
-    static VkAllocationCallbacks createCallbacks(const char *src)
-    {
-        VkAllocationCallbacks callbacks = {};
-        callbacks.pUserData = (void *)src;
-        callbacks.pfnAllocation = fnAllocation;
-        callbacks.pfnReallocation = fnReallocation;
-        callbacks.pfnFree = fnFree;
-        callbacks.pfnInternalAllocation = fnInternalAllocation;
-        callbacks.pfnInternalFree = fnInternalFree;
-        return callbacks;
-    }
-
-private:
-    static const char *scopeString(VkSystemAllocationScope scope)
-    {
-        switch (scope) {
-        case VK_SYSTEM_ALLOCATION_SCOPE_COMMAND: return "command";
-        case VK_SYSTEM_ALLOCATION_SCOPE_OBJECT: return "object";
-        case VK_SYSTEM_ALLOCATION_SCOPE_CACHE: return "cache";
-        case VK_SYSTEM_ALLOCATION_SCOPE_DEVICE: return "device";
-        case VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE: return "instance";
-        default: return "???";
-        }
-    }
-
-    static const char *typeString(VkInternalAllocationType type)
-    {
-        switch (type) {
-        case VK_INTERNAL_ALLOCATION_TYPE_EXECUTABLE: return "executable";
-        default: return "???";
-        }
-    }
-
-    /*
-     * Aligned allocation with support for realloc is a big pain on Linux.
-     *
-     * aligned_alloc() can provide alignment, but there's no aligned_realloc().
-     * realloc() can do reallocation, but can't provide alignment.
-     *
-     * We could always allocate a new aligned buffer and free the old one -
-     * except that we need to know the size of the old one, so we can copy
-     * its contents into the new one, and we can't know that unless we track it
-     * in our own std::map<void*, size_t> or equivalent.
-     *
-     * So the approach we use here is:
-     *
-     * Allocations are done with malloc()/realloc()/free().
-     * We add enough padding onto the requested size, so that we can
-     * allocate unaligned then round up to the requested alignment without
-     * overflowing the buffer.
-     *
-     * We also store a BufferHeader structure just before the
-     * aligned buffer, which tells us the size of the allocation and of
-     * the padding, so that we can realloc/free it correctly later.
-     *
-     * So the malloced data looks like:
-     *
-     *  .---------.--------------.----------------.---------.
-     *  | padding | BufferHeader | requested size | padding |
-     *  '---------'--------------'----------------'---------'
-     *  ^                        ^
-     *  |                        |
-     *  outer                    inner (with requested alignment)
-     *
-     * where each 'padding' is zero or more bytes.
-     */
-
-    struct BufferHeader
-    {
-        void *outer; // unaligned pointer returned by malloc()
-        size_t size; // original size requested in the allocation call
-    };
-
-    static VKAPI_ATTR void* VKAPI_CALL fnAllocation(void *pUserData,
-        size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
-    {
-        const char *src = (const char *)pUserData;
-        LOGI("alloc: %s: size=%lu alignment=%lu allocationScope=%s",
-            src, (unsigned long)size, (unsigned long)alignment, scopeString(allocationScope));
-
-        return doAllocation(size, alignment);
-    }
-
-    static void *doAllocation(size_t size, size_t alignment)
-    {
-        // The spec requires a return value of NULL when size is 0,
-        // so handle that case explicitly
-        if (size == 0)
-            return nullptr;
-
-        // Allocate enough space for the padding and BufferHeader
-        void *outer = malloc(alignment + sizeof(BufferHeader) + size);
-        if (!outer)
-            return nullptr;
-
-        // Add enough space for BufferHeader, then round up to alignment
-        uintptr_t inner = ((uintptr_t)outer + sizeof(BufferHeader) + alignment - 1) & ~(alignment - 1);
-
-        BufferHeader header;
-        header.outer = outer;
-        header.size = size;
-
-        memcpy((void *)(inner - sizeof(BufferHeader)), &header, sizeof(BufferHeader));
-
-        LOGI("    (allocated with outer=%p inner=%p)", outer, (void *)inner);
-
-        return (void *)inner;
-    }
-
-    static VKAPI_ATTR void* VKAPI_CALL fnReallocation(void *pUserData,
-        void *pOriginal, size_t size, size_t alignment, VkSystemAllocationScope allocationScope)
-    {
-        const char *src = (const char *)pUserData;
-        LOGI("realloc: %s: pOriginal=%p size=%lu alignment=%lu allocationScope=%s",
-            src, pOriginal, (unsigned long)size, (unsigned long)alignment, scopeString(allocationScope));
-
-        if (pOriginal == 0)
-            return doAllocation(size, alignment);
-
-        if (size == 0)
-        {
-            doFree(pOriginal);
-            return nullptr;
-        }
-
-        uintptr_t inner = (uintptr_t)pOriginal;
-
-        BufferHeader header;
-        memcpy(&header, (void *)(inner - sizeof(BufferHeader)), sizeof(BufferHeader));
-
-        LOGI("    (original size=%lu)", (unsigned long)header.size);
-
-        // First, have a go at simply calling realloc() and hope that
-        // maybe it's still aligned correctly
-
-        void *newOuter = realloc(header.outer, alignment + sizeof(BufferHeader) + size);
-        if (!newOuter)
-            return nullptr;
-
-        // Check whether the inner buffer is still aligned okay
-        // (which is true iff the outer buffer has moved by a multiple of
-        // the alignment, including when that multiple is zero)
-
-        if ((((uintptr_t)newOuter - (uintptr_t)header.outer) & (alignment - 1)) == 0)
-        {
-            // Good, we can still use this buffer. realloc() already copied
-            // the inner contents, we just need to update the header.
-
-            // Add enough space for BufferHeader, then round up to alignment
-            uintptr_t newInner = ((uintptr_t)newOuter + sizeof(BufferHeader) + alignment - 1) & ~(alignment - 1);
-
-            header.outer = newOuter;
-            header.size = size;
-
-            memcpy((void *)(newInner - sizeof(BufferHeader)), &header, sizeof(BufferHeader));
-
-            LOGI("    (reallocated with outer=%p inner=%p)", newOuter, (void *)newInner);
-
-            return (void *)newInner;
-        }
-        else
-        {
-            // Oh dear, realloc() broke the alignment. Let's abort that attempt,
-            // then allocate a new buffer and copy across.
-
-            // Find the (misaligned) realloced inner buffer
-            uintptr_t badInner = (uintptr_t)newOuter + (inner - (uintptr_t)header.outer);
-
-            // Get a totally new aligned buffer
-            void *newInner = doAllocation(size, alignment);
-            if (!newInner)
-                return nullptr;
-
-            // Copy the inner buffer
-            memcpy(newInner, (void *)badInner, std::min(size, header.size));
-
-            // Release the bad realloc()
-            free(newOuter);
-
-            LOGI("    (reallocated slowly with outer=%p inner=%p)", newOuter, (void *)newInner);
-
-            return newInner;
-        }
-    }
-
-    static VKAPI_ATTR void VKAPI_CALL fnFree(void *pUserData, void *pMemory)
-    {
-        const char *src = (const char *)pUserData;
-        LOGI("free: %s: pMemory=%p", src, pMemory);
-
-        doFree(pMemory);
-    }
-
-    static void doFree(void *pMemory)
-    {
-        uintptr_t inner = (uintptr_t)pMemory;
-
-        BufferHeader header;
-        memcpy(&header, (void *)(inner - sizeof(BufferHeader)), sizeof(BufferHeader));
-
-        LOGI("    (original size=%lu, outer=%p)", (unsigned long)header.size, header.outer);
-
-        free(header.outer);
-    }
-
-    static VKAPI_ATTR void VKAPI_CALL fnInternalAllocation(void *pUserData,
-        size_t size, VkInternalAllocationType allocationType, VkSystemAllocationScope allocationScope)
-    {
-        const char *src = (const char *)pUserData;
-        LOGI("internal allocation: %s: size=%lu type=%s allocationScope=%s",
-            src, typeString(allocationType), scopeString(allocationScope));
-    }
-
-    static VKAPI_ATTR void VKAPI_CALL fnInternalFree(void *pUserData,
-        size_t size, VkInternalAllocationType allocationType, VkSystemAllocationScope allocationScope)
-    {
-        const char *src = (const char *)pUserData;
-        LOGI("internal free: %s: size=%lu type=%s allocationScope=%s",
-            src, typeString(allocationType), scopeString(allocationScope));
-    }
-};
-
-#if ENABLE_DEBUG_ALLOCATOR
-#define ALLOCATOR_SOURCE_STRINGIFY(line) #line
-#define ALLOCATOR_SOURCE_STRING(file, line) file ":" ALLOCATOR_SOURCE_STRINGIFY(line)
-#define CREATE_ALLOCATOR() (&DebugAllocator::createCallbacks(ALLOCATOR_SOURCE_STRING(__FILE__, __LINE__)))
-#else
-#define CREATE_ALLOCATOR() (nullptr)
-#endif
-
 int main()
 {
     auto pfn_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)LoadGlobalSymbol("vkGetInstanceProcAddr");
@@ -448,7 +196,7 @@ int main()
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
 
     VkInstance instance;
-    result = pfn_vkCreateInstance(&instanceCreateInfo, CREATE_ALLOCATOR(), &instance);
+    result = pfn_vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
     ASSERT(result == VK_SUCCESS);
 
     // Try loading the per-instance functions
@@ -472,7 +220,7 @@ int main()
         // got the vkDestroyInstance function - in that case we have no safe
         // choice but to leak the instance
         if (pfn.vkDestroyInstance)
-            pfn.vkDestroyInstance(instance, CREATE_ALLOCATOR());
+            pfn.vkDestroyInstance(instance, nullptr);
 
         return false;
     }
@@ -486,7 +234,7 @@ int main()
     if (physicalDeviceCount == 0)
     {
         LOGE("No physical devices found - maybe you don't have any Vulkan drivers installed.");
-        pfn.vkDestroyInstance(instance, CREATE_ALLOCATOR()); // TODO: RAII cleanup?
+        pfn.vkDestroyInstance(instance, nullptr); // TODO: RAII cleanup?
         return false;
     }
 
@@ -578,10 +326,10 @@ int main()
     deviceCreateInfo.pEnabledFeatures = &enabledFeatures;
 
     VkDevice device;
-    result = pfn.vkCreateDevice(preferredPhysicalDevice, &deviceCreateInfo, CREATE_ALLOCATOR(), &device);
+    result = pfn.vkCreateDevice(preferredPhysicalDevice, &deviceCreateInfo, nullptr, &device);
     ASSERT(result == VK_SUCCESS);
 
-    pfn.vkDestroyDevice(device, CREATE_ALLOCATOR());
+    pfn.vkDestroyDevice(device, nullptr);
 
-    pfn.vkDestroyInstance(instance, CREATE_ALLOCATOR());
+    pfn.vkDestroyInstance(instance, nullptr);
 }
