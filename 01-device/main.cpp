@@ -369,21 +369,16 @@ private:
 
 int main()
 {
-    PrintMessage("Hello world\n");
-
     auto pfn_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)LoadGlobalSymbol("vkGetInstanceProcAddr");
     if (!pfn_vkGetInstanceProcAddr)
     {
         LOGE("Failed to find vkGetInstanceProcAddr - maybe you don't have any Vulkan drivers installed.");
         return false;
     }
-    LOGI("%p", pfn_vkGetInstanceProcAddr);
 
     auto pfn_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)pfn_vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceExtensionProperties");
     auto pfn_vkEnumerateInstanceLayerProperties = (PFN_vkEnumerateInstanceLayerProperties)pfn_vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceLayerProperties");
     auto pfn_vkCreateInstance = (PFN_vkCreateInstance)pfn_vkGetInstanceProcAddr(nullptr, "vkCreateInstance");
-
-    LOGI("%p %p %p", pfn_vkEnumerateInstanceExtensionProperties, pfn_vkEnumerateInstanceLayerProperties, pfn_vkCreateInstance);
 
     VkResult result;
 
@@ -576,7 +571,7 @@ int main()
 
     VkDeviceCreateInfo deviceCreateInfo = {};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    deviceCreateInfo.queueCreateInfoCount = deviceQueueCreateInfos.size();
+    deviceCreateInfo.queueCreateInfoCount = (uint32_t)deviceQueueCreateInfos.size();
     deviceCreateInfo.pQueueCreateInfos = deviceQueueCreateInfos.data();
     deviceCreateInfo.enabledLayerCount = 0;
     deviceCreateInfo.enabledExtensionCount = 0;

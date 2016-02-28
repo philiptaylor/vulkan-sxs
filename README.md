@@ -23,7 +23,7 @@ details from the previous step and move on to some other new feature.
 ```bash
 mkdir build
 cd build
-cmake .. -G "Visual Studio 14 2015"
+cmake .. -G "Visual Studio 14 2015 Win64"
 ```
 
 Currently only tested in VS2015, though it'd probably be worth supporting VS2013 too.
