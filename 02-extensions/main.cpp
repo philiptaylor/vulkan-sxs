@@ -106,7 +106,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackCallback(
     else if (flags & VK_DEBUG_REPORT_INFORMATION_BIT_EXT)
         severity = "INFO";
     else if (flags & VK_DEBUG_REPORT_DEBUG_BIT_EXT)
-        severity = "DEBUG";
+        severity = "DBUG"; // intentional misspelling to make the widths prettier
     else
         severity = "???";
 
@@ -119,7 +119,40 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackCallback(
     return VK_FALSE;
 }
 
-int main()
+class VksxsInstance
+{
+    VkInstance m_Instance;
+    PFN_vkDestroyInstance m_vkDestroyInstance;
+public:
+    VksxsInstance(const InstanceFunctions &pfn, VkInstance instance)
+        : m_Instance(instance), m_vkDestroyInstance(pfn.vkDestroyInstance) { }
+    ~VksxsInstance() { m_vkDestroyInstance(m_Instance, CREATE_ALLOCATOR()); }
+    operator VkInstance() { return m_Instance; }
+
+    // Prevent copying
+    VksxsInstance(const VksxsInstance &) = delete;
+    VksxsInstance &operator=(const VksxsInstance &) = delete;
+};
+
+class VksxsDebugReportCallbackEXT
+{
+    VkInstance m_Instance;
+    VkDebugReportCallbackEXT m_Handle;
+    PFN_vkDestroyDebugReportCallbackEXT m_vkDestroyDebugReportCallback;
+public:
+    VksxsDebugReportCallbackEXT(const InstanceFunctions &pfn, VkInstance instance, VkDebugReportCallbackEXT handle = VK_NULL_HANDLE)
+        : m_Handle(handle), m_Instance(instance), m_vkDestroyDebugReportCallback(pfn.vkDestroyDebugReportCallbackEXT) { }
+    ~VksxsDebugReportCallbackEXT() { m_vkDestroyDebugReportCallback(m_Instance, m_Handle, CREATE_ALLOCATOR()); }
+    operator VkDebugReportCallbackEXT() { return m_Handle; }
+
+    VkDebugReportCallbackEXT *ptr() { return &m_Handle; }
+
+    // Prevent copying
+    VksxsDebugReportCallbackEXT(const VksxsDebugReportCallbackEXT &) = delete;
+    VksxsDebugReportCallbackEXT &operator=(const VksxsDebugReportCallbackEXT &) = delete;
+};
+
+static bool RunDemo()
 {
     AllocationCallbacksBase::test();
 
@@ -153,26 +186,41 @@ int main()
     auto pfn_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)LoadGlobalSymbol("vkGetInstanceProcAddr");
     if (!pfn_vkGetInstanceProcAddr)
     {
-        LOGE("Failed to find vkGetInstanceProcAddr - maybe you don't have any Vulkan drivers installed.");
+        LOGE("Failed to find vkGetInstanceProcAddr - maybe you don't have any Vulkan drivers installed");
         return false;
     }
 
-    auto pfn_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)pfn_vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceExtensionProperties");
-    auto pfn_vkEnumerateInstanceLayerProperties = (PFN_vkEnumerateInstanceLayerProperties)pfn_vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceLayerProperties");
-    auto pfn_vkCreateInstance = (PFN_vkCreateInstance)pfn_vkGetInstanceProcAddr(nullptr, "vkCreateInstance");
+#define X(n) \
+        auto pfn_##n = (PFN_##n)pfn_vkGetInstanceProcAddr(nullptr, #n); \
+        if (!pfn_vkCreateInstance) { \
+            LOGE("Failed to find %s", #n); \
+            return false; \
+        }
+    X(vkCreateInstance);
+    X(vkEnumerateInstanceExtensionProperties)
+    X(vkEnumerateInstanceLayerProperties)
+#undef X
 
     VkResult result;
 
     uint32_t instanceLayerCount;
     result = pfn_vkEnumerateInstanceLayerProperties(&instanceLayerCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumerateInstanceLayerProperties failed (%d)", result);
+        return false;
+    }
     LOGI("%d instance layers", instanceLayerCount);
 
     std::vector<VkLayerProperties> instanceLayers(instanceLayerCount);
     if (instanceLayerCount > 0)
     {
         result = pfn_vkEnumerateInstanceLayerProperties(&instanceLayerCount, instanceLayers.data());
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateInstanceLayerProperties failed (%d)", result);
+            return false;
+        }
     }
 
     for (auto layer : instanceLayers)
@@ -185,13 +233,21 @@ int main()
 
         uint32_t instanceLayerExtensionCount;
         result = pfn_vkEnumerateInstanceExtensionProperties(layer.layerName, &instanceLayerExtensionCount, nullptr);
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateInstanceExtensionProperties failed (%d)", result);
+            return false;
+        }
 
         std::vector<VkExtensionProperties> instanceLayerExtensions(instanceLayerExtensionCount);
         if (instanceLayerExtensionCount > 0)
         {
             result = pfn_vkEnumerateInstanceExtensionProperties(layer.layerName, &instanceLayerExtensionCount, instanceLayerExtensions.data());
-            ASSERT(result == VK_SUCCESS);
+            if (result != VK_SUCCESS)
+            {
+                LOGE("vkEnumerateInstanceExtensionProperties failed (%d)", result);
+                return false;
+            }
         }
 
         for (auto extension : instanceLayerExtensions)
@@ -203,14 +259,22 @@ int main()
 
     uint32_t instanceExtensionCount;
     result = pfn_vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumerateInstanceExtensionProperties failed (%d)", result);
+        return false;
+    }
     LOGI("%d instance extensions", instanceExtensionCount);
 
     std::vector<VkExtensionProperties> instanceExtensions(instanceExtensionCount);
     if (instanceLayerCount > 0)
     {
         result = pfn_vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, instanceExtensions.data());
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateInstanceExtensionProperties failed (%d)", result);
+            return false;
+        }
     }
 
     for (auto extension : instanceExtensions)
@@ -267,13 +331,21 @@ int main()
 
         uint32_t instanceLayerExtensionCount;
         result = pfn_vkEnumerateInstanceExtensionProperties(layer.layerName, &instanceLayerExtensionCount, nullptr);
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateInstanceExtensionProperties failed (%d)", result);
+            return false;
+        }
 
         std::vector<VkExtensionProperties> instanceLayerExtensions(instanceLayerExtensionCount);
         if (instanceLayerExtensionCount > 0)
         {
             result = pfn_vkEnumerateInstanceExtensionProperties(layer.layerName, &instanceLayerExtensionCount, instanceLayerExtensions.data());
-            ASSERT(result == VK_SUCCESS);
+            if (result != VK_SUCCESS)
+            {
+                LOGE("vkEnumerateInstanceExtensionProperties failed (%d)", result);
+                return false;
+            }
         }
 
         for (auto extension : instanceLayerExtensions)
@@ -326,6 +398,9 @@ int main()
     VkApplicationInfo applicationInfo = {};
     applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     applicationInfo.pApplicationName = "vksxs";
+    applicationInfo.applicationVersion = 1;
+    applicationInfo.pEngineName = "vksxs";
+    applicationInfo.engineVersion = 1;
     applicationInfo.apiVersion = VK_MAKE_VERSION(1, 0, 3);
 
     VkInstanceCreateInfo instanceCreateInfo = {};
@@ -336,25 +411,29 @@ int main()
     instanceCreateInfo.enabledExtensionCount = (uint32_t)instanceEnabledExtensionNames.size();
     instanceCreateInfo.ppEnabledExtensionNames = instanceEnabledExtensionNames.data();
 
-    VkDebugReportCallbackCreateInfoEXT instanceCreateDebugReportInfo = {};
-    instanceCreateDebugReportInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
-    instanceCreateDebugReportInfo.flags |= VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
-    instanceCreateDebugReportInfo.flags |= VK_DEBUG_REPORT_WARNING_BIT_EXT;
-    instanceCreateDebugReportInfo.flags |= VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
-    instanceCreateDebugReportInfo.flags |= VK_DEBUG_REPORT_ERROR_BIT_EXT;
-    instanceCreateDebugReportInfo.flags |= VK_DEBUG_REPORT_DEBUG_BIT_EXT;
-    instanceCreateDebugReportInfo.pfnCallback = debugReportCallbackCallback;
-    instanceCreateInfo.pNext = &instanceCreateDebugReportInfo;
+    VkDebugReportCallbackCreateInfoEXT debugReportCreateInfo = {};
+    debugReportCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
+    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
+    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_WARNING_BIT_EXT;
+    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
+    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_ERROR_BIT_EXT;
+    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_DEBUG_BIT_EXT;
+    debugReportCreateInfo.pfnCallback = debugReportCallbackCallback;
+    instanceCreateInfo.pNext = &debugReportCreateInfo;
 
-    VkInstance instance;
-    result = pfn_vkCreateInstance(&instanceCreateInfo, CREATE_ALLOCATOR(), &instance);
-    ASSERT(result == VK_SUCCESS);
+    VkInstance unwrappedInstance;
+    result = pfn_vkCreateInstance(&instanceCreateInfo, CREATE_ALLOCATOR(), &unwrappedInstance);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkCreateInstance failed (%d)", result);
+        return false;
+    }
 
     // Try loading the per-instance functions
     bool ok = true;
     InstanceFunctions pfn = {};
 #define X(n) \
-        pfn.n = (PFN_##n)pfn_vkGetInstanceProcAddr(instance, #n); \
+        pfn.n = (PFN_##n)pfn_vkGetInstanceProcAddr(unwrappedInstance, #n); \
         if (!pfn.n) { \
             LOGE("Failed to get instance symbol %s", #n); \
             ok = false; \
@@ -374,42 +453,48 @@ int main()
         // got the vkDestroyInstance function - in that case we have no safe
         // choice but to leak the instance
         if (pfn.vkDestroyInstance)
-            pfn.vkDestroyInstance(instance, CREATE_ALLOCATOR());
-
+            pfn.vkDestroyInstance(unwrappedInstance, CREATE_ALLOCATOR());
         return false;
     }
 
-    VkDebugReportCallbackEXT debugReportCallback;
+    // Set up a RAII wrapper so we don't need to worry about calling
+    // vkDestroyInstance manually
+    VksxsInstance instance(pfn, unwrappedInstance);
+
+    VksxsDebugReportCallbackEXT debugReportCallback(pfn, instance);
     if (instanceEnabledExtensions.count("VK_EXT_debug_report"))
     {
-        VkDebugReportCallbackCreateInfoEXT debugReportCreateInfo = {};
-        debugReportCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
-        debugReportCreateInfo.flags |= VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
-        debugReportCreateInfo.flags |= VK_DEBUG_REPORT_WARNING_BIT_EXT;
-        debugReportCreateInfo.flags |= VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
-        debugReportCreateInfo.flags |= VK_DEBUG_REPORT_ERROR_BIT_EXT;
-        debugReportCreateInfo.flags |= VK_DEBUG_REPORT_DEBUG_BIT_EXT;
-        debugReportCreateInfo.pfnCallback = debugReportCallbackCallback;
-        result = pfn.vkCreateDebugReportCallbackEXT(instance, &debugReportCreateInfo, CREATE_ALLOCATOR(), &debugReportCallback);
-        ASSERT(result == VK_SUCCESS);
+        result = pfn.vkCreateDebugReportCallbackEXT(instance, &debugReportCreateInfo, CREATE_ALLOCATOR(), debugReportCallback.ptr());
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkCreateDebugReportCallbackEXT failed (%d)", result);
+            return false;
+        }
     }
 
     // Now we've got the instance, so we can find the physical devices
 
     uint32_t physicalDeviceCount;
     result = pfn.vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumeratePhysicalDevices failed (%d)", result);
+        return false;
+    }
 
     if (physicalDeviceCount == 0)
     {
-        LOGE("No physical devices found - maybe you don't have any Vulkan drivers installed.");
-        pfn.vkDestroyInstance(instance, CREATE_ALLOCATOR()); // TODO: RAII cleanup?
+        LOGE("No physical devices found - maybe you don't have any Vulkan drivers installed");
         return false;
     }
 
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     result = pfn.vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data());
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumeratePhysicalDevices failed (%d)", result);
+        return false;
+    }
 
     for (auto physicalDevice : physicalDevices)
     {
@@ -419,10 +504,9 @@ int main()
         // Dump some basic information.
         // (driverVersion doesn't have to be packed in format defined by Vulkan,
         // but it might be, so we'll decode and print it in that form in case it's helpful.)
-        LOGI("Device: \"%s\", API version %s, driver version %s (%d), vendor 0x%04x, device 0x%04x, type %d",
+        LOGI("Device: \"%s\", API version %s, driver version %d (%s), vendor 0x%04x, device 0x%04x, type %d",
             properties.deviceName, VersionToString(properties.apiVersion).c_str(),
-            VersionToString(properties.driverVersion).c_str(),
-            properties.driverVersion,
+            properties.driverVersion, VersionToString(properties.driverVersion).c_str(),
             properties.vendorID, properties.deviceID,
             properties.deviceType);
     }
@@ -434,14 +518,22 @@ int main()
 
     uint32_t deviceLayerCount;
     result = pfn.vkEnumerateDeviceLayerProperties(preferredPhysicalDevice, &deviceLayerCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumerateDeviceLayerProperties failed (%d)", result);
+        return false;
+    }
     LOGI("%d device layers", deviceLayerCount);
 
     std::vector<VkLayerProperties> deviceLayers(deviceLayerCount);
     if (deviceLayerCount > 0)
     {
         result = pfn.vkEnumerateDeviceLayerProperties(preferredPhysicalDevice, &deviceLayerCount, deviceLayers.data());
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateDeviceLayerProperties failed (%d)", result);
+            return false;
+        }
     }
 
     for (auto layer : deviceLayers)
@@ -454,13 +546,21 @@ int main()
 
         uint32_t deviceLayerExtensionCount;
         result = pfn.vkEnumerateDeviceExtensionProperties(preferredPhysicalDevice, layer.layerName, &deviceLayerExtensionCount, nullptr);
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateDeviceExtensionProperties failed (%d)", result);
+            return false;
+        }
 
         std::vector<VkExtensionProperties> deviceLayerExtensions(deviceLayerExtensionCount);
         if (deviceLayerExtensionCount > 0)
         {
             result = pfn.vkEnumerateDeviceExtensionProperties(preferredPhysicalDevice, layer.layerName, &deviceLayerExtensionCount, deviceLayerExtensions.data());
-            ASSERT(result == VK_SUCCESS);
+            if (result != VK_SUCCESS)
+            {
+                LOGE("vkEnumerateDeviceExtensionProperties failed (%d)", result);
+                return false;
+            }
         }
 
         for (auto extension : deviceLayerExtensions)
@@ -472,14 +572,22 @@ int main()
 
     uint32_t deviceExtensionCount;
     result = pfn.vkEnumerateDeviceExtensionProperties(preferredPhysicalDevice, nullptr, &deviceExtensionCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumerateDeviceExtensionProperties failed (%d)", result);
+        return false;
+    }
     LOGI("%d device extensions", deviceExtensionCount);
 
     std::vector<VkExtensionProperties> deviceExtensions(deviceExtensionCount);
     if (deviceLayerCount > 0)
     {
         result = pfn.vkEnumerateDeviceExtensionProperties(preferredPhysicalDevice, nullptr, &deviceExtensionCount, deviceExtensions.data());
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateDeviceExtensionProperties failed (%d)", result);
+            return false;
+        }
     }
 
     for (auto extension : deviceExtensions)
@@ -496,13 +604,21 @@ int main()
 
         uint32_t deviceLayerExtensionCount;
         result = pfn.vkEnumerateDeviceExtensionProperties(preferredPhysicalDevice, layer.layerName, &deviceLayerExtensionCount, nullptr);
-        ASSERT(result == VK_SUCCESS);
+        if (result != VK_SUCCESS)
+        {
+            LOGE("vkEnumerateDeviceExtensionProperties failed (%d)", result);
+            return false;
+        }
 
         std::vector<VkExtensionProperties> deviceLayerExtensions(deviceLayerExtensionCount);
         if (deviceLayerExtensionCount > 0)
         {
             result = pfn.vkEnumerateDeviceExtensionProperties(preferredPhysicalDevice, layer.layerName, &deviceLayerExtensionCount, deviceLayerExtensions.data());
-            ASSERT(result == VK_SUCCESS);
+            if (result != VK_SUCCESS)
+            {
+                LOGE("vkEnumerateDeviceExtensionProperties failed (%d)", result);
+                return false;
+            }
         }
 
         for (auto extension : deviceLayerExtensions)
@@ -619,9 +735,22 @@ int main()
 
     VkDevice device;
     result = pfn.vkCreateDevice(preferredPhysicalDevice, &deviceCreateInfo, CREATE_ALLOCATOR(), &device);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkCreateDevice failed (%d)", result);
+        return false;
+    }
+
+    LOGI("Successfully created device %p", device);
 
     pfn.vkDestroyDevice(device, CREATE_ALLOCATOR());
 
-    pfn.vkDestroyInstance(instance, CREATE_ALLOCATOR());
+    return true;
+}
+
+int main()
+{
+    if (!RunDemo())
+        return -1;
+    return 0;
 }

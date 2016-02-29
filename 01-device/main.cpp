@@ -23,9 +23,9 @@
 #ifdef _WIN32
 // Disable secure CRT warnings since we prefer to use portable CRT functions
 #define _CRT_SECURE_NO_WARNINGS
-// Use WIN32_LEAN_AND_MEAN to reduce the amount of stuff pulled in by windows.h
+// Reduce the amount of stuff pulled in by windows.h
 #define WIN32_LEAN_AND_MEAN
-// Avoid interactions with std::min, std::max
+// Avoid bad interactions with std::min, std::max
 #define NOMINMAX
 #include <windows.h>
 #endif // _WIN32
@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+
 
 static void PrintMessage(const char *msg)
 {
@@ -115,101 +116,68 @@ struct InstanceFunctions
 #undef X
 };
 
-int main()
+class VksxsInstance
+{
+    VkInstance m_Instance;
+    PFN_vkDestroyInstance m_vkDestroyInstance;
+public:
+    VksxsInstance(VkInstance instance, const InstanceFunctions &pfn)
+        : m_Instance(instance), m_vkDestroyInstance(pfn.vkDestroyInstance) { }
+    ~VksxsInstance() { m_vkDestroyInstance(m_Instance, nullptr); }
+    operator VkInstance() { return m_Instance; }
+
+    // Prevent copying
+    VksxsInstance(const VksxsInstance &) = delete;
+    VksxsInstance &operator=(const VksxsInstance &) = delete;
+};
+
+static bool RunDemo()
 {
     auto pfn_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)LoadGlobalSymbol("vkGetInstanceProcAddr");
     if (!pfn_vkGetInstanceProcAddr)
     {
-        LOGE("Failed to find vkGetInstanceProcAddr - maybe you don't have any Vulkan drivers installed.");
+        LOGE("Failed to find vkGetInstanceProcAddr - maybe you don't have any Vulkan drivers installed");
         return false;
     }
 
-    auto pfn_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties)pfn_vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceExtensionProperties");
-    auto pfn_vkEnumerateInstanceLayerProperties = (PFN_vkEnumerateInstanceLayerProperties)pfn_vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceLayerProperties");
     auto pfn_vkCreateInstance = (PFN_vkCreateInstance)pfn_vkGetInstanceProcAddr(nullptr, "vkCreateInstance");
+    if (!pfn_vkCreateInstance)
+    {
+        LOGE("Failed to find vkCreateInstance");
+        return false;
+    }
 
     VkResult result;
-
-    uint32_t instanceLayerCount;
-    result = pfn_vkEnumerateInstanceLayerProperties(&instanceLayerCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
-    LOGI("%d instance layers", instanceLayerCount);
-
-    std::vector<VkLayerProperties> instanceLayers(instanceLayerCount);
-    if (instanceLayerCount > 0)
-    {
-        result = pfn_vkEnumerateInstanceLayerProperties(&instanceLayerCount, instanceLayers.data());
-        ASSERT(result == VK_SUCCESS);
-    }
-
-    for (auto layer : instanceLayers)
-    {
-        LOGI("Instance layer: \"%s\", spec version %s, impl version %d, \"%s\"",
-            layer.layerName,
-            VersionToString(layer.specVersion).c_str(),
-            layer.implementationVersion,
-            layer.description);
-
-        uint32_t instanceLayerExtensionCount;
-        result = pfn_vkEnumerateInstanceExtensionProperties(layer.layerName, &instanceLayerExtensionCount, nullptr);
-        ASSERT(result == VK_SUCCESS);
-
-        std::vector<VkExtensionProperties> instanceLayerExtensions(instanceLayerExtensionCount);
-        if (instanceLayerExtensionCount > 0)
-        {
-            result = pfn_vkEnumerateInstanceExtensionProperties(layer.layerName, &instanceLayerExtensionCount, instanceLayerExtensions.data());
-            ASSERT(result == VK_SUCCESS);
-        }
-
-        for (auto extension : instanceLayerExtensions)
-        {
-            LOGI("    Instance layer extension: \"%s\", spec version %d",
-                extension.extensionName, extension.specVersion);
-        }
-    }
-
-    uint32_t instanceExtensionCount;
-    result = pfn_vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
-    LOGI("%d instance extensions", instanceExtensionCount);
-
-    std::vector<VkExtensionProperties> instanceExtensions(instanceExtensionCount);
-    if (instanceLayerCount > 0)
-    {
-        result = pfn_vkEnumerateInstanceExtensionProperties(nullptr, &instanceExtensionCount, instanceExtensions.data());
-        ASSERT(result == VK_SUCCESS);
-    }
-
-    for (auto extension : instanceExtensions)
-    {
-        LOGI("Instance extension: \"%s\", spec version %d",
-            extension.extensionName, extension.specVersion);
-    }
 
     VkApplicationInfo applicationInfo = {};
     applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     applicationInfo.pApplicationName = "vksxs";
+    applicationInfo.applicationVersion = 1;
+    applicationInfo.pEngineName = "vksxs";
+    applicationInfo.engineVersion = 1;
     applicationInfo.apiVersion = VK_MAKE_VERSION(1, 0, 3);
 
     VkInstanceCreateInfo instanceCreateInfo = {};
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
 
-    VkInstance instance;
-    result = pfn_vkCreateInstance(&instanceCreateInfo, nullptr, &instance);
-    ASSERT(result == VK_SUCCESS);
+    VkInstance unwrappedInstance;
+    result = pfn_vkCreateInstance(&instanceCreateInfo, nullptr, &unwrappedInstance);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkCreateInstance failed (%d)", result);
+        return false;
+    }
 
     // Try loading the per-instance functions
-    bool ok = true;
     InstanceFunctions pfn = {};
+    bool ok = true;
 #define X(n) \
-    do { \
-        pfn.n = (PFN_##n)pfn_vkGetInstanceProcAddr(instance, #n); \
+        pfn.n = (PFN_##n)pfn_vkGetInstanceProcAddr(unwrappedInstance, #n); \
         if (!pfn.n) { \
             LOGE("Failed to get instance symbol %s", #n); \
             ok = false; \
-        } \
-    } while (0);
+        }
     INSTANCE_FUNCTIONS
 #undef X
 
@@ -220,27 +188,37 @@ int main()
         // got the vkDestroyInstance function - in that case we have no safe
         // choice but to leak the instance
         if (pfn.vkDestroyInstance)
-            pfn.vkDestroyInstance(instance, nullptr);
-
+            pfn.vkDestroyInstance(unwrappedInstance, nullptr);
         return false;
     }
+
+    // Set up a RAII wrapper so we don't need to worry about calling
+    // vkDestroyInstance manually
+    VksxsInstance instance(unwrappedInstance, pfn);
 
     // Now we've got the instance, so we can find the physical devices
 
     uint32_t physicalDeviceCount;
     result = pfn.vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumeratePhysicalDevices failed (%d)", result);
+        return false;
+    }
 
     if (physicalDeviceCount == 0)
     {
-        LOGE("No physical devices found - maybe you don't have any Vulkan drivers installed.");
-        pfn.vkDestroyInstance(instance, nullptr); // TODO: RAII cleanup?
+        LOGE("No physical devices found - maybe you don't have any Vulkan drivers installed");
         return false;
     }
 
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     result = pfn.vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data());
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkEnumeratePhysicalDevices failed (%d)", result);
+        return false;
+    }
 
     for (auto physicalDevice : physicalDevices)
     {
@@ -250,10 +228,9 @@ int main()
         // Dump some basic information.
         // (driverVersion doesn't have to be packed in format defined by Vulkan,
         // but it might be, so we'll decode and print it in that form in case it's helpful.)
-        LOGI("Device: \"%s\", API version %s, driver version %s (%d), vendor 0x%04x, device 0x%04x, type %d",
+        LOGI("Device: \"%s\", API version %s, driver version %d (%s), vendor 0x%04x, device 0x%04x, type %d",
             properties.deviceName, VersionToString(properties.apiVersion).c_str(),
-            VersionToString(properties.driverVersion).c_str(),
-            properties.driverVersion,
+            properties.driverVersion, VersionToString(properties.driverVersion).c_str(),
             properties.vendorID, properties.deviceID,
             properties.deviceType);
     }
@@ -327,9 +304,22 @@ int main()
 
     VkDevice device;
     result = pfn.vkCreateDevice(preferredPhysicalDevice, &deviceCreateInfo, nullptr, &device);
-    ASSERT(result == VK_SUCCESS);
+    if (result != VK_SUCCESS)
+    {
+        LOGE("vkCreateDevice failed (%d)", result);
+        return false;
+    }
+
+    LOGI("Successfully created device %p", device);
 
     pfn.vkDestroyDevice(device, nullptr);
 
-    pfn.vkDestroyInstance(instance, nullptr);
+    return true;
+}
+
+int main()
+{
+    if (!RunDemo())
+        return -1;
+    return 0;
 }

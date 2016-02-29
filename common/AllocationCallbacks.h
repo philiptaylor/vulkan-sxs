@@ -59,7 +59,7 @@ public:
  * temporary won't be destroyed until after the API call has returned.
  *
  * i.e. you can use it like:
- *   vkFoo(..., &DebugAllocator::createCallbacks("some identifier"));
+ *   vkFoo(..., &DebugAllocationCallbacks::createCallbacks("some identifier"));
  * or through a macro:
  *   vkFoo(..., CREATE_ALLOCATOR());
  */
