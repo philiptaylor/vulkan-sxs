@@ -43,7 +43,7 @@ Once we've got a `VkDevice`, we have two options:
 * Continue using instance-specific functions from `vkGetInstanceProcAddr` for all the rest of the Vulkan API.
 * Use device-specific functions returned by `vkGetDeviceProcAddr` instead.
 
-These are only valid for one `VkDevice`, but they might be a *tiny* bit more efficient
+The device-specific ones are only valid for one `VkDevice`, but they might be a *tiny* bit more efficient
 since they can skip the code that decides which device to dispatch each call to.
 
 ### vkCreateInstance

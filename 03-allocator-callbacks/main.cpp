@@ -20,37 +20,30 @@
  * THE SOFTWARE.
  */
 
+#define ENABLE_DEBUG_ALLOCATOR 1
+#define ENABLE_DEBUG_REPORT_VERBOSE 0
+
 #include "common/Common.h"
 
-#include "common/Log.h"
+#include "common/DeviceLoader.h"
 
-#include <cstdarg>
-#include <cstdio>
-
-void PrintMessage(const char *msg)
+static bool RunDemo()
 {
-    printf("%s", msg);
-    fflush(stdout);
-#ifdef _WIN32
-    // It's awkward to read stdout in Visual Studio, so duplicate the message
-    // into VS's debug output window
-    OutputDebugStringA(msg);
-#endif
+    AllocationCallbacksBase::test();
+
+    DeviceLoader loader;
+    loader.SetEnableApiDump(false);
+    if (!loader.Setup())
+        return false;
+
+    LOGI("Successfully created device %p", loader.GetDevice());
+
+    return true;
 }
 
-void PrintfMessage(const char *fmt, ...)
+int main()
 {
-    const size_t MAX_MESSAGE_SIZE = 1024;
-    char buf[MAX_MESSAGE_SIZE];
-
-    va_list ap;
-    va_start(ap, fmt);
-#ifdef _WIN32
-    _vsnprintf(buf, MAX_MESSAGE_SIZE, fmt, ap);
-#else
-    vsnprintf(buf, MAX_MESSAGE_SIZE, fmt, ap);
-#endif
-    buf[MAX_MESSAGE_SIZE - 1] = '\0';
-    va_end(ap);
-    PrintMessage(buf);
+    if (!RunDemo())
+        return -1;
+    return 0;
 }

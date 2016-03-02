@@ -20,21 +20,33 @@
  * THE SOFTWARE.
  */
 
-#define ENABLE_DEBUG_REPORT_VERBOSE 0
-#define ENABLE_APIDUMP 0
-
 #include "common/Common.h"
 
+#include "common/AllocationCallbacks.h"
+#include "common/AutoWrappers.h"
+#include "common/DeviceLoader.h"
 #include "common/Log.h"
 
-#include <algorithm>
-#include <cstdint>
-#include <cstdio>
 #include <fstream>
 #include <map>
 #include <set>
-#include <string>
 #include <vector>
+
+DeviceLoader::DeviceLoader()
+{
+    m_EnableApiDump = false;
+
+    m_DebugReportFlags = 0;
+    m_DebugReportFlags |= VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
+    m_DebugReportFlags |= VK_DEBUG_REPORT_WARNING_BIT_EXT;
+    m_DebugReportFlags |= VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
+    m_DebugReportFlags |= VK_DEBUG_REPORT_ERROR_BIT_EXT;
+    m_DebugReportFlags |= VK_DEBUG_REPORT_DEBUG_BIT_EXT;
+}
+
+DeviceLoader::~DeviceLoader()
+{
+}
 
 static void *LoadGlobalSymbol(const char *symbol)
 {
@@ -61,30 +73,7 @@ static std::string VersionToString(uint32_t version)
     return std::string(buf);
 }
 
-
-#define INSTANCE_FUNCTIONS \
-    X(vkDestroyInstance) \
-    X(vkEnumeratePhysicalDevices) \
-    X(vkGetPhysicalDeviceProperties) \
-    X(vkGetPhysicalDeviceQueueFamilyProperties) \
-    X(vkEnumerateDeviceLayerProperties) \
-    X(vkEnumerateDeviceExtensionProperties) \
-    X(vkCreateDevice) \
-    X(vkDestroyDevice)
-
-#define INSTANCE_FUNCTIONS_EXT_DEBUG_REPORT \
-    X(vkCreateDebugReportCallbackEXT) \
-    X(vkDestroyDebugReportCallbackEXT)
-
-struct InstanceFunctions
-{
-#define X(n) PFN_##n n;
-    INSTANCE_FUNCTIONS
-    INSTANCE_FUNCTIONS_EXT_DEBUG_REPORT
-#undef X
-};
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackCallback(
+static VKAPI_ATTR VkBool32 VKAPI_CALL DebugReportCallbackCallback(
     VkDebugReportFlagsEXT flags,
     VkDebugReportObjectTypeEXT objectType,
     uint64_t object,
@@ -126,42 +115,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallbackCallback(
     return VK_FALSE;
 }
 
-class VksxsInstance
+bool DeviceLoader::Setup()
 {
-    VkInstance m_Instance;
-    PFN_vkDestroyInstance m_vkDestroyInstance;
-public:
-    VksxsInstance(const InstanceFunctions &pfn, VkInstance instance)
-        : m_Instance(instance), m_vkDestroyInstance(pfn.vkDestroyInstance) { }
-    ~VksxsInstance() { m_vkDestroyInstance(m_Instance, nullptr); }
-    operator VkInstance() { return m_Instance; }
-
-    // Prevent copying
-    VksxsInstance(const VksxsInstance &) = delete;
-    VksxsInstance &operator=(const VksxsInstance &) = delete;
-};
-
-class VksxsDebugReportCallbackEXT
-{
-    VkInstance m_Instance;
-    VkDebugReportCallbackEXT m_Handle;
-    PFN_vkDestroyDebugReportCallbackEXT m_vkDestroyDebugReportCallback;
-public:
-    VksxsDebugReportCallbackEXT(const InstanceFunctions &pfn, VkInstance instance, VkDebugReportCallbackEXT handle = VK_NULL_HANDLE)
-        : m_Handle(handle), m_Instance(instance), m_vkDestroyDebugReportCallback(pfn.vkDestroyDebugReportCallbackEXT) { }
-    ~VksxsDebugReportCallbackEXT() { m_vkDestroyDebugReportCallback(m_Instance, m_Handle, nullptr); }
-    operator VkDebugReportCallbackEXT() { return m_Handle; }
-
-    VkDebugReportCallbackEXT *ptr() { return &m_Handle; }
-
-    // Prevent copying
-    VksxsDebugReportCallbackEXT(const VksxsDebugReportCallbackEXT &) = delete;
-    VksxsDebugReportCallbackEXT &operator=(const VksxsDebugReportCallbackEXT &) = delete;
-};
-
-static bool RunDemo()
-{
-    if (ENABLE_APIDUMP)
+    if (m_EnableApiDump)
     {
         // The validation layers read some settings from vk_layer_settings.txt
         // (in the current working directory), and there appears to be no API
@@ -293,7 +249,7 @@ static bool RunDemo()
     std::vector<std::string> desiredDeviceLayers;
     std::vector<std::string> desiredDeviceExtensions;
 
-    if (ENABLE_APIDUMP)
+    if (m_EnableApiDump)
     {
         desiredInstanceLayers.push_back("VK_LAYER_LUNARG_api_dump");
         desiredDeviceLayers.push_back("VK_LAYER_LUNARG_api_dump");
@@ -418,16 +374,12 @@ static bool RunDemo()
 
     VkDebugReportCallbackCreateInfoEXT debugReportCreateInfo = {};
     debugReportCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
-    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_INFORMATION_BIT_EXT;
-    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_WARNING_BIT_EXT;
-    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
-    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_ERROR_BIT_EXT;
-    debugReportCreateInfo.flags |= VK_DEBUG_REPORT_DEBUG_BIT_EXT;
-    debugReportCreateInfo.pfnCallback = debugReportCallbackCallback;
+    debugReportCreateInfo.flags = m_DebugReportFlags;
+    debugReportCreateInfo.pfnCallback = DebugReportCallbackCallback;
     instanceCreateInfo.pNext = &debugReportCreateInfo;
 
     VkInstance unwrappedInstance;
-    result = pfn_vkCreateInstance(&instanceCreateInfo, nullptr, &unwrappedInstance);
+    result = pfn_vkCreateInstance(&instanceCreateInfo, CREATE_ALLOCATOR(), &unwrappedInstance);
     if (result != VK_SUCCESS)
     {
         LOGE("vkCreateInstance failed (%d)", result);
@@ -436,7 +388,9 @@ static bool RunDemo()
 
     // Try loading the per-instance functions
     bool ok = true;
-    InstanceFunctions pfn = {};
+    InstanceFunctions &pfn = m_InstanceFunctions;
+    memset(&pfn, 0, sizeof(pfn));
+
 #define X(n) \
         pfn.n = (PFN_##n)pfn_vkGetInstanceProcAddr(unwrappedInstance, #n); \
         if (!pfn.n) { \
@@ -458,18 +412,18 @@ static bool RunDemo()
         // got the vkDestroyInstance function - in that case we have no safe
         // choice but to leak the instance
         if (pfn.vkDestroyInstance)
-            pfn.vkDestroyInstance(unwrappedInstance, nullptr);
+            pfn.vkDestroyInstance(unwrappedInstance, CREATE_ALLOCATOR());
         return false;
     }
 
     // Set up a RAII wrapper so we don't need to worry about calling
     // vkDestroyInstance manually
-    VksxsInstance instance(pfn, unwrappedInstance);
+    AutoVkInstance instance(pfn, unwrappedInstance);
 
-    VksxsDebugReportCallbackEXT debugReportCallback(pfn, instance);
+    AutoVkDebugReportCallbackEXT debugReportCallback(pfn, instance);
     if (instanceEnabledExtensions.count("VK_EXT_debug_report"))
     {
-        result = pfn.vkCreateDebugReportCallbackEXT(instance, &debugReportCreateInfo, nullptr, debugReportCallback.ptr());
+        result = pfn.vkCreateDebugReportCallbackEXT(instance, &debugReportCreateInfo, CREATE_ALLOCATOR(), debugReportCallback.ptr());
         if (result != VK_SUCCESS)
         {
             LOGE("vkCreateDebugReportCallbackEXT failed (%d)", result);
@@ -707,14 +661,19 @@ static bool RunDemo()
 
     std::vector<VkDeviceQueueCreateInfo> deviceQueueCreateInfos;
 
-    float defaultPriority = 1.0f;
+    bool separateQueuesOnSharedFamily = false;
+    if (transferQueueFamilyIdx == graphicsQueueFamilyIdx
+        && queueFamilyProperties[graphicsQueueFamilyIdx].queueCount > 1)
+        separateQueuesOnSharedFamily = true;
+
+    float defaultPriorities[] = { 1.0f, 1.0f };
 
     {
         VkDeviceQueueCreateInfo deviceQueueCreateInfo = {};
         deviceQueueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         deviceQueueCreateInfo.queueFamilyIndex = graphicsQueueFamilyIdx;
-        deviceQueueCreateInfo.queueCount = 1;
-        deviceQueueCreateInfo.pQueuePriorities = &defaultPriority;
+        deviceQueueCreateInfo.queueCount = separateQueuesOnSharedFamily ? 2 : 1;
+        deviceQueueCreateInfo.pQueuePriorities = defaultPriorities;
         deviceQueueCreateInfos.push_back(deviceQueueCreateInfo);
     }
 
@@ -724,7 +683,7 @@ static bool RunDemo()
         deviceQueueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         deviceQueueCreateInfo.queueFamilyIndex = transferQueueFamilyIdx;
         deviceQueueCreateInfo.queueCount = 1;
-        deviceQueueCreateInfo.pQueuePriorities = &defaultPriority;
+        deviceQueueCreateInfo.pQueuePriorities = defaultPriorities;
         deviceQueueCreateInfos.push_back(deviceQueueCreateInfo);
     }
 
@@ -739,23 +698,22 @@ static bool RunDemo()
     deviceCreateInfo.pEnabledFeatures = &enabledFeatures;
 
     VkDevice device;
-    result = pfn.vkCreateDevice(preferredPhysicalDevice, &deviceCreateInfo, nullptr, &device);
+    result = pfn.vkCreateDevice(preferredPhysicalDevice, &deviceCreateInfo, CREATE_ALLOCATOR(), &device);
     if (result != VK_SUCCESS)
     {
         LOGE("vkCreateDevice failed (%d)", result);
         return false;
     }
 
-    LOGI("Successfully created device %p", device);
+    m_GraphicsQueueFamily = graphicsQueueFamilyIdx;
+    m_TransferQueueFamily = transferQueueFamilyIdx;
+    pfn.vkGetDeviceQueue(device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue);
+    pfn.vkGetDeviceQueue(device, m_TransferQueueFamily, separateQueuesOnSharedFamily ? 1 : 0, &m_TransferQueue);
 
-    pfn.vkDestroyDevice(device, nullptr);
+    m_Instance = std::move(instance);
+    m_DebugReportCallback = std::move(debugReportCallback);
+    m_Device = AutoVkDevice(pfn, device);
+    m_PhysicalDevice = preferredPhysicalDevice;
 
     return true;
-}
-
-int main()
-{
-    if (!RunDemo())
-        return -1;
-    return 0;
 }
