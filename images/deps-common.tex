@@ -1,0 +1,86 @@
+\documentclass[border={2pt -1cm 2pt -1cm},convert={density=150,outext=.png}]{standalone}
+\usepackage{mathpazo}
+\usepackage{tikz}
+\usetikzlibrary{arrows,decorations.pathmorphing,backgrounds,positioning,fit,shapes.misc,calc}
+%
+\tikzset{
+pipestage/.style={
+    rounded rectangle,
+    minimum width=20mm,
+    inner sep=2pt,
+    draw=black,
+    node distance=15mm,
+    font=\ttfamily
+},
+pipestageinner/.style={
+    pipestage,
+    minimum width=10mm,
+    node distance=3mm,
+    font=\ttfamily\small
+},
+pipedep/.style={
+    red,semithick,>=stealth'
+},
+pipedep2/.style={
+    red,very thick,>=stealth'
+},
+pipepixdep/.style={
+    red,thick,densely dotted
+},
+barrier/.style={
+    rectangle,
+    minimum width=40mm,
+    minimum height=8mm,
+    inner sep=2pt,
+    draw=black,
+    font=\ttfamily
+},
+barrierport/.style={
+    rectangle,
+    minimum width=40mm,
+    draw=black,
+    inner sep=2pt,
+    font=\ttfamily\footnotesize
+},
+}
+%
+\tikzset{pipeline/.pic={
+%
+\node [pipestageinner] (vs) {VERT};
+\node [pipestageinner,right=of vs] (fs) {FRAG};
+\node [pipestageinner,right=of fs] (ca) {COLR};
+\node [pipestageinner,right=of ca] (comp) {COMP};
+\node [pipestageinner,right=of comp] (xfer) {XFER};
+%
+\node [pipestage,above=of ca] (top) {TOP};
+\node [pipestage,below=of ca] (bottom) {BOTTOM};
+%
+\draw [->,pipepixdep] (vs) -- (fs);
+\draw [->,pipepixdep] (fs) -- (ca);
+\draw (top.south)
+    edge [->,pipedep,in=90,out=270] (vs)
+    edge [->,pipedep,in=90,out=270] (fs)
+    edge [->,pipedep,in=90,out=270] (ca)
+    edge [->,pipedep,in=90,out=270] (comp)
+    edge [->,pipedep,in=90,out=270] (xfer);
+\draw (bottom.north)
+    edge [<-,pipedep,in=270,out=90] (vs)
+    edge [<-,pipedep,in=270,out=90] (fs)
+    edge [<-,pipedep,in=270,out=90] (ca)
+    edge [<-,pipedep,in=270,out=90] (comp)
+    edge [<-,pipedep,in=270,out=90] (xfer);
+%
+\begin{scope}[on background layer]
+\node (bg) [draw,fit=(top) (bottom) (vs) (xfer)] {};
+\node [anchor=north west] at (bg.north west) {#1};
+\end{scope}
+%
+}}
+%
+\tikzset{pics/barrier/.style 2 args={code={
+%
+\node (box) [barrier] {PipelineBarrier};
+\node (in) [barrierport,anchor=south] at (box.north) {#1};
+\node (out) [barrierport,anchor=north] at (box.south) {#2};
+%
+}}}

@@ -1,0 +1,20 @@
+\input{deps-common.tex}
+
+\begin{document}
+\begin{tikzpicture}
+
+\pic[] (clear-) {pipeline=Clear};
+\pic[xshift=12cm] (draw1-) {pipeline=Draw 1};
+\pic[xshift=18cm] (draw2-) {pipeline=Draw 2};
+
+%\draw [->,pipepixdep] (clear-ca.south east) .. controls ($ (clear-ca) + (4cm,-4cm) $) and ($ (draw1-ca) - (4cm,-4cm) $) .. (draw1-ca.north west);
+\draw [->,pipepixdep] (draw1-ca.south east) .. controls ($ (draw1-ca) + (4cm,-4cm) $) and ($ (draw2-ca) - (4cm,-4cm) $) .. (draw2-ca.north west);
+
+\pic[xshift=8.3cm] (barrier1-) {barrier={BOTTOM\_OF\_PIPE}{TOP\_OF\_PIPE}};
+
+\draw [->,pipedep2] (clear-bottom.south) .. controls ($ (clear-bottom) + (2cm,-2cm) $) and ($ (barrier1-in) - (3cm,-2cm) $) .. ($ (barrier1-in.north) - (1cm,0) $);
+\draw [->,pipedep2] ($ (barrier1-out.south) + (0.5cm,0) $) .. controls ($ (barrier1-out.south) + (3cm,-4cm) $) and ($ (draw1-top.north west) - (4cm,-2cm) $) .. (draw1-top.north west);
+\draw [->,pipedep2] ($ (barrier1-out.south) + (1cm,0) $) .. controls ($ (barrier1-out.south) + (3cm,-2cm) $) and ($ (draw1-top.north west) - (4cm,-0.5cm) $) .. ($ (draw2-top.north west) - (8cm,-0.5cm) $) .. controls ($ (draw2-top.north west) - (4cm,-0.5cm) $) .. (draw2-top.north west);
+
+\end{tikzpicture}
+\end{document}

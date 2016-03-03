@@ -1,0 +1,12 @@
+\input{deps-common.tex}
+
+\begin{document}
+\begin{tikzpicture}
+
+\pic[] (draw1-) {pipeline=Draw 1};
+\pic[xshift=8cm] (draw2-) {pipeline=Draw 2};
+
+\draw [->,pipepixdep] (draw1-ca.south east) .. controls ($ (draw1-ca) + (4cm,-4cm) $) and ($ (draw2-ca) - (4cm,-4cm) $) .. (draw2-ca.north west);
+
+\end{tikzpicture}
+\end{document}
